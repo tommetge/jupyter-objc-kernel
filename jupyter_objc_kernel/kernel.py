@@ -23,7 +23,9 @@ class RealTimeSubprocess(subprocess.Popen):
         self._write_to_stdout = write_to_stdout
         self._write_to_stderr = write_to_stderr
 
-        super().__init__(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        env = os.environ.copy()
+        env["LD_LIBRARY_PATH"] = "/home/tom/GNUstep/Library/Libraries:/usr/GNUstep/Local/Library/Libraries:/usr/GNUstep/System/Library/Libraries"
+        super().__init__(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, env=env)
 
         self._stdout_queue = Queue()
         self._stdout_thread = Thread(target=RealTimeSubprocess._enqueue_output, args=(self.stdout, self._stdout_queue))
@@ -66,25 +68,28 @@ class RealTimeSubprocess(subprocess.Popen):
             self._write_to_stderr(stderr_contents)
 
 
-class CKernel(Kernel):
-    implementation = 'jupyter_c_kernel'
-    implementation_version = '1.0'
-    language = 'c'
-    language_version = 'C11'
-    language_info = {'name': 'c',
+class ObjCKernel(Kernel):
+    implementation = 'jupyter_objc_kernel'
+    implementation_version = '0.1'
+    language = 'objc'
+    language_version = '2'
+    language_info = {'name': 'objc',
                      'mimetype': 'text/plain',
-                     'file_extension': '.c'}
-    banner = "C kernel.\n" \
-             "Uses gcc, compiles in C11, and creates source code files and executables in temporary folder.\n"
+                     'file_extension': '.m'}
+    banner = "Obj-C kernel.\n" \
+             "Uses clang and creates source code files and executables in temporary folder.\n"
 
     def __init__(self, *args, **kwargs):
-        super(CKernel, self).__init__(*args, **kwargs)
+        super(ObjCKernel, self).__init__(*args, **kwargs)
         self.files = []
         mastertemp = tempfile.mkstemp(suffix='.out')
         os.close(mastertemp[0])
         self.master_path = mastertemp[1]
         filepath = path.join(path.dirname(path.realpath(__file__)), 'resources', 'master.c')
-        subprocess.call(['gcc', filepath, '-std=c11', '-rdynamic', '-ldl', '-o', self.master_path])
+        subprocess.call(['clang', filepath, '-std=c11', '-rdynamic', '-ldl', '-o', self.master_path])
+        self.objc_flags = subprocess.check_output(['/usr/GNUstep/System/Tools/gnustep-config', '--objc-flags']).split()
+        self.objc_libs = subprocess.check_output(['/usr/GNUstep/System/Tools/gnustep-config', '--objc-libs']).split()
+        self.objc_libs.append('-lgnustep-base')
 
     def cleanup_files(self):
         """Remove all the temporary files created by the kernel"""
@@ -107,14 +112,22 @@ class CKernel(Kernel):
     def _write_to_stderr(self, contents):
         self.send_response(self.iopub_socket, 'stream', {'name': 'stderr', 'text': contents})
 
+    def _convert(self, s):
+        try:
+            return str(s,encoding='utf8')
+        except:
+            return s
+
     def create_jupyter_subprocess(self, cmd):
         return RealTimeSubprocess(cmd,
                                   lambda contents: self._write_to_stdout(contents.decode()),
                                   lambda contents: self._write_to_stderr(contents.decode()))
 
-    def compile_with_gcc(self, source_filename, binary_filename, cflags=None, ldflags=None):
-        cflags = ['-std=c11', '-fPIC', '-shared', '-rdynamic'] + cflags
-        args = ['gcc', source_filename] + cflags + ['-o', binary_filename] + ldflags
+    def compile_with_clang(self, source_filename, binary_filename, cflags=None, ldflags=None):
+        cflags = self.objc_flags + cflags
+        ldflags = self.objc_libs + ldflags + ['-shared', '-rdynamic']
+        args = ['clang'] + cflags + ldflags + [source_filename, '-o', binary_filename]
+        # self._write_to_stderr(" ".join(map(lambda x: self._convert(x), args)) + "\n")
         return self.create_jupyter_subprocess(args)
 
     def _filter_magics(self, code):
@@ -143,17 +156,17 @@ class CKernel(Kernel):
 
         magics = self._filter_magics(code)
 
-        with self.new_temp_file(suffix='.c') as source_file:
+        with self.new_temp_file(suffix='.m') as source_file:
             source_file.write(code)
             source_file.flush()
             with self.new_temp_file(suffix='.out') as binary_file:
-                p = self.compile_with_gcc(source_file.name, binary_file.name, magics['cflags'], magics['ldflags'])
+                p = self.compile_with_clang(source_file.name, binary_file.name, magics['cflags'], magics['ldflags'])
                 while p.poll() is None:
                     p.write_contents()
                 p.write_contents()
                 if p.returncode != 0:  # Compilation failed
                     self._write_to_stderr(
-                            "[C kernel] GCC exited with code {}, the executable will not be executed".format(
+                            "[Obj-C kernel] clang exited with code {}, the executable will not be executed".format(
                                     p.returncode))
                     return {'status': 'ok', 'execution_count': self.execution_count, 'payload': [],
                             'user_expressions': {}}
@@ -164,7 +177,7 @@ class CKernel(Kernel):
         p.write_contents()
 
         if p.returncode != 0:
-            self._write_to_stderr("[C kernel] Executable exited with code {}".format(p.returncode))
+            self._write_to_stderr("[Obj-C kernel] Executable exited with code {}".format(p.returncode))
         return {'status': 'ok', 'execution_count': self.execution_count, 'payload': [], 'user_expressions': {}}
 
     def do_shutdown(self, restart):
