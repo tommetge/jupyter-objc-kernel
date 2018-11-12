@@ -1,5 +1,6 @@
 from queue import Queue
 from threading import Thread
+from sys import platform as Platform
 
 from ipykernel.kernelbase import Kernel
 import re
@@ -87,9 +88,12 @@ class ObjCKernel(Kernel):
         self.master_path = mastertemp[1]
         filepath = path.join(path.dirname(path.realpath(__file__)), 'resources', 'master.c')
         subprocess.call(['clang', filepath, '-std=c11', '-rdynamic', '-ldl', '-o', self.master_path])
-        self.objc_flags = subprocess.check_output(['/usr/GNUstep/System/Tools/gnustep-config', '--objc-flags']).split()
-        self.objc_libs = subprocess.check_output(['/usr/GNUstep/System/Tools/gnustep-config', '--objc-libs']).split()
-        self.objc_libs.append('-lgnustep-base')
+        self.objc_flags = []
+        self.objc_libs = ['-framework', 'Foundation']
+        if Platform == 'linux':
+            self.objc_flags = subprocess.check_output(['/usr/GNUstep/System/Tools/gnustep-config', '--objc-flags']).split()
+            self.objc_libs = subprocess.check_output(['/usr/GNUstep/System/Tools/gnustep-config', '--objc-libs']).split()
+            self.objc_libs.append('-lgnustep-base')
 
     def cleanup_files(self):
         """Remove all the temporary files created by the kernel"""
